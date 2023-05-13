@@ -1,0 +1,437 @@
+#import packages
+
+import math
+import numpy as np
+import pandas as pd
+
+#given conditions
+lat = 40.1164*np.pi/180 #geodetic latitude in radians
+H = 233/1000 #in km
+Re = 6378 #in km
+e = 0.08182 #earth shape eccentricity; source: Bate, Mueller, White Page 75
+mu = 398600 #in km^3/s^2
+
+#import csv of telescope observations
+df = pd.read_csv('OneWebIllinoisTelescope.csv')
+rac = df.loc[1:,'Right_Ascension_deg']
+dcl = df.loc[1:,'Declination_deg']
+lsr = df.loc[1:,'local sidereal']
+time = df.loc[1:,'time_MJD']
+rac = rac.to_numpy().astype(float)
+dcl = dcl.to_numpy().astype(float)
+lsr = lsr.to_numpy().astype(float)
+time = time.to_numpy().astype(float)
+
+# Use Gauss IOD to derive orbit state vectors
+r2_vec_list = []
+v2_vec_list = []
+rho2_list = []
+L2_vec_list = []
+R_list = []
+
+for i in range(0,len(rac),3):
+    #Gauss angles-only method of preliminary orbit determination 
+    #station position
+    g = ( Re/(1-e**2*(math.sin(lat))**2)**0.5 + H )*math.cos(lat)
+    h = ( Re*(1-e**2)/((1-e**2*(math.sin(lat))**2)**0.5) + H )*math.sin(lat)
+    long = lsr[i+1]*np.pi/180
+    #since observatios are from the same observatory within span of 6 minutes...
+    # assume R1 = R2 = R3 = R
+    R = np.array([g*math.cos(long), g*math.sin(long), h]) 
+   
+    alpha1, alpha2, alpha3 = rac[i]*np.pi/180, rac[i+1]*np.pi/180, rac[i+2]*np.pi/180
+    delta1, delta2, delta3 = dcl[i]*np.pi/180, dcl[i+1]*np.pi/180, dcl[i+2]*np.pi/180
+    
+    #change in times in seconds
+    tau1 = (time[i] - time[i+1])*24*60*60
+    tau3 = (time[i+2] - time[i+1])*24*60*60
+    tau = (time[i+2] - time[i])*24*60*60
+    
+    L1 = np.array([math.cos(delta1)*math.cos(alpha1), math.cos(delta1)*math.sin(alpha1), math.sin(delta1)])
+    L2 = np.array([math.cos(delta2)*math.cos(alpha2), math.cos(delta2)*math.sin(alpha2), math.sin(delta2)])
+    L3 = np.array([math.cos(delta3)*math.cos(alpha3), math.cos(delta3)*math.sin(alpha3), math.sin(delta3)])
+    
+    p = [np.cross(L2,L3), np.cross(L1, L3), np.cross(L1, L2)] #list of 3 values
+    
+    #get D coefficients to get expression for rho in D and tau
+    D0 = np.dot(L1, p[0])
+    D = [] #list of 9 values
+    for m in range(3):
+        for n in range(3):
+            D.append(np.dot(R,p[n]))
+    D = np.array(D) #D11, D12, D13, D21, D22, D23, D31, D32, D33
+  
+    #get coeffs A, B, E, R2sq
+    A = (1/D0)*(-D[1]*tau3/tau + D[4] + D[7]*tau1/tau)
+    B = (1/(6*D0))*(D[1]*(tau3**2-tau**2)*tau3/tau + D[7]*(tau**2-tau1**2)*tau1/tau)
+    E = np.dot(R,L2)
+    R2sq = np.dot(R,R)
+    
+    #get coeffs of 8th degree polynomial in r2 and solve for root of x
+    a = -1*(A**2 + 2*A*E + R2sq)
+    b = -2*mu*B*(A+E)
+    c = -1*mu**2 * B**2
+    
+    #finding real and positive root of 8th degree polynomial in r2
+    poly = [1,0,a,0,0,b,0,0,c]
+    Roots = np.roots(poly)
+    #print (Roots)
+    realposroots = [x for x in Roots if np.isreal(x) and x>0] 
+    r2 = np.real(realposroots[0]).astype(float)
+    
+    c1 = (tau3/tau)*(1 + (mu*(tau**2-tau3**2))/(6*r2**3))
+    c3 = -1*(tau1/tau)*(1 + (mu*(tau**2-tau1**2))/(6*r2**3))
+    rho1 = (1/D0)*(-D[0] + D[3]/c1 - c3*D[6]/c1)
+    rho2 = (1/D0)*(-c1*D[1] + D[4] - c3*D[7])
+    rho3 = (1/D0)*(-c1*D[2]/c3 + D[5]/c3 -D[8])
+    r2_vec = R + rho2*L2
+    r1_vec = R + rho1*L1
+    r3_vec = R + rho3*L3
+    
+    #get Lagrange coeffs to calculate v2_vec
+    f3 = 1 - 0.5*mu*tau3**2/r2**3
+    f1 = 1 - 0.5*mu*tau1**2/r2**3
+    f1g3minusf3g1 = tau - (1/6)*mu*tau**3/r2**3
+    v2_vec = (1/f1g3minusf3g1)*(f1*r3_vec - f3*r1_vec)
+    
+    r2_vec_list.append(r2_vec)
+    v2_vec_list.append(v2_vec)
+    rho2_list.append(rho2)
+    R_list.append(R)
+    L2_vec_list.append(L2)
+
+#input data required to run the Extended Kalman Filter
+#three position vectors calculated only from Gauss IOD
+r2_vecs = np.array(r2_vec_list)
+#three velocity vectors calculated only from Gauss IOD
+v2_vecs = np.array(v2_vec_list)
+#three rho2 (satellite position minus station position) position vectors calculated only from Gauss IOD
+#these are the 3 observations "z"
+rho2s = np.array(rho2_list)
+#three station coordinates however in this case the three are identical
+R_vecs = np.array(R_list)
+#three sets of unit vectors
+rho2hat_vecs = np.array(L2_vec_list)
+
+#custom function to get orbital elements from r_vec and v_vec
+def func_a(r_scal, v_scal):
+    return 1/(2/r_scal - v_scal**2/mu)
+def func_e_vec(r_scal, r_vec, v_scal, v_vec):
+    R = (v_scal**2)/mu - 1/r_scal
+    V = (1/mu)*np.dot(r_vec, v_vec)
+    return R*r_vec - V*v_vec
+def func_h_vec(r_vec, v_vec):
+    return np.cross(r_vec, v_vec)
+def func_n_vec(h_vec):
+    return np.cross(np.array([0,0,1]) , h_vec)
+def func_angle_i(h_vec):
+    h_scal = np.linalg.norm(h_vec)
+    return (math.acos(h_vec[2]/h_scal))
+def func_om(n_vec):
+    if n_vec[1]>=0:
+        return (math.acos(n_vec[0]/np.sqrt(sum(n**2 for n in n_vec))))
+    else:
+        return (2*math.pi - math.acos(n_vec[0]/np.sqrt(sum(n**2 for n in n_vec))))
+def func_w(n_vec, e_vec):
+    n_scal = np.sqrt(sum(n**2 for n in n_vec))
+    e = np.linalg.norm(e_vec)
+    if e_vec[2]>=0:
+        return (math.acos(np.dot(n_vec, e_vec) / (n_scal*e)))
+    else:
+        return (2*math.pi - math.acos(np.dot(n_vec, e_vec) / (n_scal*e)))
+def func_true_f(e_vec, r_vec, v_vec):
+    r_scal = np.linalg.norm(r_vec)
+    v_rad = np.dot(r_vec, v_vec)/r_scal
+    e = np.linalg.norm(e_vec)
+    if v_rad >= 0:
+        return (math.acos(np.dot(e_vec, r_vec)/(e*r_scal)))
+    else:
+        return (2*math.pi - math.acos(np.dot(e_vec, r_vec)/(e*r_scal)))
+def func_f_to_M(f, e_vec):
+    e = np.linalg.norm(e_vec)
+    X = math.tan(f/2)*((1-e)/(1+e))**0.5
+    E = 2*math.atan(X)
+    return E - e*math.sin(E)
+
+#custom function to get r_vec, v_vec from orbital elements
+def M_to_f(e, M, tol = 1e-13, n=10):
+    i = 0
+    delta = 1
+    Ei = (M + e/2) if M < math.pi else (M - e/2)
+    while abs(delta)>tol and i<=n:
+        delta = (Ei - e*math.sin(Ei) - M)/(1-e*math.cos(Ei))
+        Ei = Ei - delta
+        i+=1
+    E = Ei
+    return 2*math.atan((np.sqrt((1+e)/(1-e)))*math.tan(E/2))
+def a_to_h(a, e):
+    return np.sqrt(mu*a*(1-e**2))
+def r_scal_using_a(a, e, f):
+    return a*(1-e**2)/(1+e*math.cos(f))
+def r_scal_using_h(h, e, f):
+    return (h**2/mu)*(1/(1+e*math.cos(f)))
+def func_r_vec_peri(r_scal, f):
+    return r_scal*np.array([math.cos(f), math.sin(f), 0])
+def func_v_vec_peri(h, e, f):
+    return (mu/h)*np.array([-math.sin(f), e+math.cos(f), 0])
+def R3_w(w):
+    return np.array([[math.cos(w), math.sin(w), 0],[-math.sin(w), math.cos(w), 0],[0,0,1]])
+def R1_i(i):
+    return np.array([[1,0,0],[0, math.cos(i), math.sin(i)],[0, -math.sin(i), math.cos(i)]])
+def R3_om(om):
+    return np.array([[math.cos(om), math.sin(om), 0],[-math.sin(om), math.cos(om), 0],[0,0,1]])
+def func_cosmat_peri_to_geo(R3w, R1i, R3om):
+    n = np.matmul(R3w, R1i)
+    cosmat_geo_to_peri = np.matmul(n, R3om)
+    return cosmat_geo_to_peri.transpose()
+def func_r_geo(cosmat_peri_to_geo, r_vec_peri):
+    return np.matmul(cosmat_peri_to_geo, r_vec_peri)
+def func_v_geo(cosmat_peri_to_geo, v_vec_peri):
+    return np.matmul(cosmat_peri_to_geo, v_vec_peri)
+
+#Custom function to propagate state vectors over given time
+def func_2BP_state_propagator(r_vec, v_vec, delta_t):
+    r_scal = np.linalg.norm(r_vec)
+    v_scal = np.linalg.norm(v_vec)
+    a = func_a(r_scal, v_scal)
+    e_vec = func_e_vec(r_scal, r_vec, v_scal, v_vec)
+    h_vec = func_h_vec(r_vec, v_vec)
+    n_vec = func_n_vec(h_vec)
+    i = func_angle_i(h_vec)
+    om = func_om(n_vec)
+    w = func_w(n_vec, e_vec)
+    f = func_true_f(e_vec, r_vec, v_vec)
+    M = func_f_to_M(f, e_vec)
+    
+    M = M + delta_t*(mu/a**3)**0.5 #propagate delta_t time to new mean anomaly
+    
+    f = M_to_f(e, M, tol = 1e-13, n=10)
+    h = a_to_h(a, e)
+    r_scal = r_scal_using_a(a, e, f)
+    r_vec_peri = func_r_vec_peri(r_scal, f)
+    v_vec_peri = func_v_vec_peri(h, e, f)
+    R3w = R3_w(w)
+    R1i = R1_i(i)
+    R3om = R3_om(om)
+    cosmat_peri_to_geo = func_cosmat_peri_to_geo(R3w, R1i, R3om)
+    r_geo = func_r_geo(cosmat_peri_to_geo, r_vec_peri)
+    v_geo = func_v_geo(cosmat_peri_to_geo, v_vec_peri)
+    
+    return r_geo, v_geo
+
+#Computing the observations-to-state partial differentials matrix
+#using GaussIOD does not permit a clean analytical mapping from State to Ascension Declination angles
+#as an approximate, add a delta_angle to the 2nd set of declination & ascension observation and find difference in position vector components
+
+def func_GaussIOD(decl1, decl2, decl3, acs1, acs2, acs3, R, t1, t2, t3): #units in hours, km and degrees
+    alpha1, alpha2, alpha3 = acs1*np.pi/180, acs2*np.pi/180, acs3*np.pi/180
+    delta1, delta2, delta3 = decl1*np.pi/180, decl2*np.pi/180, decl3*np.pi/180
+    tau1 = (t1 - t2)*24*60*60
+    tau3 = (t3 - t2)*24*60*60
+    tau = (t3 - t1)*24*60*60
+    L1 = np.array([math.cos(delta1)*math.cos(alpha1), math.cos(delta1)*math.sin(alpha1), math.sin(delta1)])
+    L2 = np.array([math.cos(delta2)*math.cos(alpha2), math.cos(delta2)*math.sin(alpha2), math.sin(delta2)])
+    L3 = np.array([math.cos(delta3)*math.cos(alpha3), math.cos(delta3)*math.sin(alpha3), math.sin(delta3)])
+    p = [np.cross(L2,L3), np.cross(L1, L3), np.cross(L1, L2)]
+    D0 = np.dot(L1, p[0])
+    D = []
+    for m in range(3):
+        for n in range(3):
+            D.append(np.dot(R,p[n]))
+    D = np.array(D) #D11, D12, D13, D21, D22, D23, D31, D32, D33
+    A = (1/D0)*(-D[1]*tau3/tau + D[4] + D[7]*tau1/tau)
+    B = (1/(6*D0))*(D[1]*(tau3**2-tau**2)*tau3/tau + D[7]*(tau**2-tau1**2)*tau1/tau)
+    E = np.dot(R,L2)
+    R2sq = np.dot(R,R)
+    a = -1*(A**2 + 2*A*E + R2sq)
+    b = -2*mu*B*(A+E)
+    c = -1*mu**2 * B**2    
+    poly = [1,0,a,0,0,b,0,0,c]
+    Roots = np.roots(poly)
+    realposroots = [x for x in Roots if np.isreal(x) and x>0] 
+    r2 = np.real(realposroots[0]).astype(float)
+    c1 = (tau3/tau)*(1 + (mu*(tau**2-tau3**2))/(6*r2**3))
+    c3 = -1*(tau1/tau)*(1 + (mu*(tau**2-tau1**2))/(6*r2**3))
+    rho1 = (1/D0)*(-D[0] + D[3]/c1 - c3*D[6]/c1)
+    rho2 = (1/D0)*(-c1*D[1] + D[4] - c3*D[7])
+    rho3 = (1/D0)*(-c1*D[2]/c3 + D[5]/c3 -D[8])
+    r2_vec = R + rho2*L2
+    r1_vec = R + rho1*L1
+    r3_vec = R + rho3*L3
+    f3 = 1 - 0.5*mu*tau3**2/r2**3
+    f1 = 1 - 0.5*mu*tau1**2/r2**3
+    f1g3minusf3g1 = tau - (1/6)*mu*tau**3/r2**3
+    v2_vec = (1/f1g3minusf3g1)*(f1*r3_vec - f3*r1_vec)
+    state = np.array([r2_vec[0],r2_vec[1],r2_vec[2],v2_vec[0],v2_vec[1],v2_vec[2],])
+    return state
+
+diff = 5
+#partial differentials over position vector components
+d_decl_rx_list = []
+d_decl_ry_list = []
+d_decl_rz_list = []
+d_acs_rx_list = []
+d_acs_ry_list = []
+d_acs_rz_list = []
+#partial differentials over velocity vector components
+d_decl_vx_list = []
+d_decl_vy_list = []
+d_decl_vz_list = []
+d_acs_vx_list = []
+d_acs_vy_list = []
+d_acs_vz_list = []
+
+
+for i in range(0,len(rac),3):
+    t1, t2, t3 = time[i], time[i+1], time[i+2]
+    R = R_vecs[int(i/3)]
+    acs1, acs2, acs3 = rac[i], rac[i+1], rac[i+2]
+    decl1, decl2, decl3 = dcl[i], dcl[i+1], dcl[i+2]
+    
+    #partials of observed declination to state
+    state1 = func_GaussIOD(decl1, decl2 + diff, decl3, acs1, acs2, acs3, R, t1, t2, t3)
+    state2 = func_GaussIOD(decl1, decl2 - diff, decl3, acs1, acs2, acs3, R, t1, t2, t3)
+    d_decl_rx = (2*diff*np.pi/180)/( (state1[0] - r2_vecs[int(i/3), 0]) - (state2[0] - r2_vecs[int(i/3), 0]) ) 
+    d_decl_ry = (2*diff*np.pi/180)/( (state1[1] - r2_vecs[int(i/3), 1]) - (state2[1] - r2_vecs[int(i/3), 1]) )
+    d_decl_rz = (2*diff*np.pi/180)/( (state1[2] - r2_vecs[int(i/3), 2]) - (state2[2] - r2_vecs[int(i/3), 2]) )
+    d_decl_vx = (2*diff*np.pi/180)/( (state1[3] - v2_vecs[int(i/3), 0]) - (state2[3] - v2_vecs[int(i/3), 0]) ) 
+    d_decl_vy = (2*diff*np.pi/180)/( (state1[4] - v2_vecs[int(i/3), 1]) - (state2[4] - v2_vecs[int(i/3), 1]) )
+    d_decl_vz = (2*diff*np.pi/180)/( (state1[5] - v2_vecs[int(i/3), 2]) - (state2[5] - v2_vecs[int(i/3), 2]) )
+    d_decl_rx_list.append(d_decl_rx)
+    d_decl_ry_list.append(d_decl_ry)
+    d_decl_rz_list.append(d_decl_rz)
+    d_decl_vx_list.append(d_decl_vx)
+    d_decl_vy_list.append(d_decl_vy)
+    d_decl_vz_list.append(d_decl_vz)
+    
+    #partials of observed ascension to state
+    state1 = func_GaussIOD(decl1, decl2, decl3, acs1, acs2 + diff, acs3, R, t1, t2, t3)
+    state2 = func_GaussIOD(decl1, decl2, decl3, acs1, acs2 - diff, acs3, R, t1, t2, t3)
+    d_acs_rx = (2*diff*np.pi/180)/( (state1[0] - r2_vecs[int(i/3), 0]) - (state2[0] - r2_vecs[int(i/3), 0]) ) 
+    d_acs_ry = (2*diff*np.pi/180)/( (state1[1] - r2_vecs[int(i/3), 1]) - (state2[1] - r2_vecs[int(i/3), 1]) )
+    d_acs_rz = (2*diff*np.pi/180)/( (state1[2] - r2_vecs[int(i/3), 2]) - (state2[2] - r2_vecs[int(i/3), 2]) )
+    d_acs_vx = (2*diff*np.pi/180)/( (state1[3] - v2_vecs[int(i/3), 0]) - (state2[3] - v2_vecs[int(i/3), 0]) ) 
+    d_acs_vy = (2*diff*np.pi/180)/( (state1[4] - v2_vecs[int(i/3), 1]) - (state2[4] - v2_vecs[int(i/3), 1]) )
+    d_acs_vz = (2*diff*np.pi/180)/( (state1[5] - v2_vecs[int(i/3), 2]) - (state2[5] - v2_vecs[int(i/3), 2]) )
+    d_acs_rx_list.append(d_acs_rx)
+    d_acs_ry_list.append(d_acs_ry)
+    d_acs_rz_list.append(d_acs_rz)
+    d_acs_vx_list.append(d_acs_rx)
+    d_acs_vy_list.append(d_acs_ry)
+    d_acs_vz_list.append(d_acs_rz)
+
+d_declrx = np.mean(d_decl_rx_list)
+d_declry = np.mean(d_decl_ry_list)
+d_declrz = np.mean(d_decl_rz_list)
+d_acsrx = np.mean(d_acs_rx_list)
+d_acsry = np.mean(d_acs_ry_list)
+d_acsrz = np.mean(d_acs_rz_list)
+
+d_declvx = np.mean(d_decl_vx_list)
+d_declvy = np.mean(d_decl_vy_list)
+d_declvz = np.mean(d_decl_vz_list)
+d_acsvx = np.mean(d_acs_vx_list)
+d_acsvy = np.mean(d_acs_vy_list)
+d_acsvz = np.mean(d_acs_vz_list)
+
+H = np.array( [ [d_declrx, d_declry, d_declrz, d_declvx, d_declvy, d_declvz], [d_acsrx, d_acsry, d_acsrz, d_acsvx, d_acsvy, d_acsvz] ] )
+
+#Run the Extended Kalman Filter
+
+#covariances in position and veclotity vectors which abate the risk turning the EKF "smug"
+covr = 700 #km; assume about 10% uncertainty covariance in position vector 
+covv = 0.2 #km/s; assume about 10% uncertaintly covariance in velocity vector
+qr = 10 #km; assume 10km process noise in r2_vec components
+qv = 0.01 #km/s; assume 0.1km/s process noise in v2_vec components
+n = 1/3600 #measurement uncertainty in angle measurements
+
+#INITIALIZE EKF
+#First state State matrix and Uncertainty covariance matrix
+X0 = np.concatenate((r2_vecs[0], v2_vecs[0]))
+print("initial state : ", X0, np.linalg.norm(X0[0:3]), np.linalg.norm(X0[3:6])) 
+P0_r = np.array([ [covr,0,0,0,0,0],[0,covr,0,0,0,0],[0,0,covr,0,0,0] ])
+P0_v = np.array([ [0,0,0,covv,0,0],[0,0,0,0,covv,0],[0,0,0,0,0,covv] ])
+P0 = np.concatenate((P0_r, P0_v) , axis = 0)
+#print("initial covariance matrix : ", P0)
+
+#Process noise matrix
+Q_r = np.array([ [qr,0,0,0,0,0],[0,qr,0,0,0,0],[0,0,qr,0,0,0] ])
+Q_v = np.array([ [0,0,0,qv,0,0],[0,0,0,0,qv,0],[0,0,0,0,0,qv] ])
+Q = np.concatenate((Q_r, Q_v), axis = 0)
+
+#Measurement noise matrix
+R = np.array([ [n**2, 0],[0, n**2] ])
+
+for n in range(len(r2_vecs)-1): # n will run for 2 iterations since there are 3 rhohat_vec values
+    
+    acs = rac[n*3 + 1]*np.pi/180  #1, 4
+    decl = dcl[n*3 + 1]*np.pi/180 #1, 4
+    
+    #DELTA TIME
+    delta_t = (time[(n+1)*3 + 1] - time[n*3 + 1])*24*60*60  # 4minus1, 7minus4
+    #PREDICTED STATE
+    rvec0 = X0[0:3]
+    vvec0 = X0[3:6]
+    rvec_pred, vvec_pred = func_2BP_state_propagator(rvec0, vvec0, delta_t)
+    X_pred = np.concatenate((rvec_pred, vvec_pred))
+    
+    #ERROR STATE TRANSITION MATRIX (Vallado 2013 10.7 Page 811)
+    #Fv = np.array([ [0,0,0,1,0,0],[0,0,0,0,1,0],[0,0,0,0,0,1] ])
+    dt = delta_t
+    dtsq = 0.5*dt**2
+    rs = np.linalg.norm(rvec0)
+    R1 = -mu/rs**3
+    R2 = 3*mu/rs**5
+    rx = rvec0[0]
+    ry = rvec0[1]
+    rz = rvec0[2]
+    Fv1 = np.array( [1+R2*dtsq*rx**2+R1*dtsq, R2*dtsq*rx*ry, R2*dtsq*rx*rz, dt, 0, 0] )
+    Fv2 = np.array( [R2*dtsq*rx*ry, 1+R2*dtsq*ry**2+R1*dtsq, R2*dtsq*ry*rz, 0, dt, 0] )
+    Fv3 = np.array( [R2*dtsq*rx*rz, R2*dtsq*rz*ry, 1+R2*dtsq*rz**2+R1*dtsq, 0, 0 ,dt] )
+    Fa1 = np.array( [R2*dt*rx**2+R1*dt, R2*dt*rx*ry, R2*dt*rx*rz, 1, 0, 0] )
+    Fa2 = np.array( [R2*dt*rx*ry, R2*dt*ry**2+R1*dt, R2*dt*ry*rz, 0, 1, 0] )
+    Fa3 = np.array( [R2*dt*rx*rz, R2*dt*rz*ry, R2*dt*rz**2+R1*dt, 0, 0, 1] )
+    Phi = np.stack((Fv1, Fv2, Fv3, Fa1, Fa2, Fa3), axis = 0)   
+    
+    #PREDICTED STATE ERROR for EKF= 0
+    
+    #PREDICTED UNCERTAINTY COVARIANCE
+    P = np.matmul(Phi, np.matmul(P0, Phi.transpose())) + Q
+    
+    #RESIDUALS MATRIX
+    acs_k = rac[(n+1)*3 + 1]*np.pi/180  #4, 7
+    decl_k = dcl[(n+1)*3 + 1]*np.pi/180 #4, 7
+    b = np.array([decl_k, acs_k]) - np.matmul(H, X_pred)
+    print("Residual angles :" , b*180/math.pi)
+    
+    #KALMAN GAIN
+    k1 = np.matmul(P, H.transpose())
+    K = np.matmul(k1, R)
+    print("Kalman Gain Matrix : ", K)
+    
+    #CORRECTED ESTIMATES
+    delta_Xc = np.matmul(K, b)
+    Pc = P - np.matmul(K, np.matmul(H, P))
+    Xc = X_pred + delta_Xc    
+    X0 = Xc
+    P0 = Pc
+    print("corrected state : ", X0, np.linalg.norm(X0[0:3]), np.linalg.norm(X0[3:6]))
+    
+#Orbital Elements of the Corrected State vectors 
+r_vec = X0[0:3]
+v_vec = X0[3:6]
+
+r_scal = np.linalg.norm(r_vec)
+v_scal = np.linalg.norm(v_vec)
+
+a = func_a(r_scal, v_scal)
+e_vec = func_e_vec(r_scal, r_vec, v_scal, v_vec)
+h_vec = func_h_vec(r_vec, v_vec)
+n_vec = func_n_vec(h_vec)
+i = func_angle_i(h_vec)
+om = func_om(n_vec)
+w = func_w(n_vec, e_vec)
+f = func_true_f(e_vec, r_vec, v_vec)
+M = func_f_to_M(f, e_vec)
+print("Orbital Elements a, e, i, om, aop, M :", a, np.linalg.norm(e_vec), i*180/np.pi, om*180/np.pi, w*180/np.pi, (360+M*180/np.pi))
+
