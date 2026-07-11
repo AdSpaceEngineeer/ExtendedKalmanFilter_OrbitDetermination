@@ -1,10 +1,11 @@
 # Extended Kalman Filter Orbit Determination for SSA Tracklet Processing
 
-This repository demonstrates a compact Extended Kalman Filter (EKF) workflow for
-orbit determination from noisy ground-based observations. It is framed as a
-space-situational-awareness (SSA) prototype: start from a perturbed Cartesian
-state, ingest sequential range/range-rate measurements, propagate state and
-covariance, and show how the estimate converges toward the truth trajectory.
+This repository packages my original optical orbit-determination prototype into
+a reviewer-friendly Python project. The source artifact is preserved in
+`pythod_code`, while the packaged workflow now reads `Observations.xlsx`, applies
+the same Gauss angles-only initial orbit determination (IOD) logic, and exposes a
+reproducible EKF-style demo for state propagation, covariance updates, residuals,
+and plots.
 
 ## Why This Matters
 
@@ -14,7 +15,25 @@ was represented, how residuals behaved, and whether the estimated state is
 credible enough for downstream screening or conjunction analysis. This project
 keeps those pieces visible.
 
-## Scenario
+## Original Observation Workflow
+
+- **Input data:** `Observations.xlsx`
+- **Original script:** `pythod_code`
+- **Observation type:** right ascension, declination, local sidereal time, and
+  MJD timestamps from an Illinois telescope pass
+- **Initial orbit determination:** Gauss angles-only IOD over three-observation
+  arcs
+- **Packaged entry point:** `examples/run_observations.py`
+
+```bash
+python -m pip install -e .
+python examples/run_observations.py
+```
+
+This writes `docs/gauss_iod_states.csv` and
+`docs/plots/gauss_iod_observation_states.svg`.
+
+## EKF Demonstration Scenario
 
 - **Object:** representative LEO spacecraft
 - **State vector:** `[rx, ry, rz, vx, vy, vz]` in ECI km and km/s
@@ -29,9 +48,12 @@ keeps those pieces visible.
 ```text
 .
 |-- examples/
-|   `-- run_demo.py              # Reproducible EKF demo
+|   |-- run_demo.py              # Reproducible EKF demo
+|   `-- run_observations.py      # Uses Observations.xlsx and Gauss IOD
 |-- src/
 |   `-- ekf_od/
+|       |-- angles.py            # Refactored Gauss angles-only IOD
+|       |-- data.py              # Workbook/CSV observation loading
 |       |-- dynamics.py          # Two-body propagation helpers
 |       |-- filter.py            # EKF predict/update implementation
 |       |-- measurements.py      # Range/range-rate model
@@ -46,10 +68,12 @@ keeps those pieces visible.
 
 ```bash
 python -m pip install -e .
+python examples/run_observations.py
 python examples/run_demo.py
 ```
 
-The demo writes plots to `docs/plots/`.
+The observation workflow uses the committed `Observations.xlsx`. The synthetic
+EKF demo remains useful as a compact covariance/residual regression example.
 
 ## Example Outputs
 
@@ -86,6 +110,8 @@ changed.
 This is not a production-grade orbit-determination system. It is a transparent
 prototype showing the core mechanics that matter for SSA analysis:
 
+- optical observation ingestion from `Observations.xlsx`;
+- Gauss angles-only initial orbit determination;
 - sequential observation processing;
 - covariance propagation and update;
 - residual inspection;
