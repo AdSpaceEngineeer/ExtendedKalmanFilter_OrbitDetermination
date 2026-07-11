@@ -1,11 +1,7 @@
 # Extended Kalman Filter Orbit Determination for SSA Tracklet Processing
 
-This repository packages my original optical orbit-determination prototype into
-a reviewer-friendly Python project. The source artifact is preserved in
-`pythod_code`, while the packaged workflow now reads `Observations.xlsx`, applies
-the same Gauss angles-only initial orbit determination (IOD) logic, and exposes a
-reproducible EKF-style demo for state propagation, covariance updates, residuals,
-and plots.
+This repository applies the Gauss angles-only initial orbit determination (IOD) logic and exposes a
+reproducible EKF state propagation, covariance updates, residuals, and plots.
 
 ## Why This Matters
 
@@ -18,7 +14,6 @@ keeps those pieces visible.
 ## Original Observation Workflow
 
 - **Input data:** `Observations.xlsx`
-- **Original script:** `pythod_code`
 - **Observation type:** right ascension, declination, local sidereal time, and
   MJD timestamps from an Illinois telescope pass
 - **Initial orbit determination:** Gauss angles-only IOD over three-observation
@@ -107,8 +102,7 @@ changed.
 
 ## SSA Interpretation
 
-This is not a production-grade orbit-determination system. It is a transparent
-prototype showing the core mechanics that matter for SSA analysis:
+This is a prototype showing the core mechanics that matter for SSA analysis:
 
 - optical observation ingestion from `Observations.xlsx`;
 - Gauss angles-only initial orbit determination;
