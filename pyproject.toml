@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ekf-od"
+version = "0.1.0"
+description = "Extended Kalman Filter orbit-determination demo for SSA-style tracklet processing"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7",
+  "numpy>=1.24",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
